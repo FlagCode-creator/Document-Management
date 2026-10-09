@@ -3214,6 +3214,76 @@
     let pdfRenderToken = 0;
     let notifications = [];
     const fileCache = new Map();
+    const fileRequests = new Map();
+    const FILE_DB_MAX_ENTRIES = 80;
+    const SIGNATURE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+    let fileDbPromise = null;
+
+    function openFileDb() {
+      if (!fileDbPromise) {
+        fileDbPromise = new Promise(function (resolve) {
+          try {
+            const req = indexedDB.open('saraban_files_v1', 1);
+            req.onupgradeneeded = function () {
+              req.result.createObjectStore('files', { keyPath: 'id' }).createIndex('savedAt', 'savedAt');
+            };
+            req.onsuccess = function () { resolve(req.result); };
+            req.onerror = req.onblocked = function () { resolve(null); };
+          } catch (err) { resolve(null); }
+        });
+      }
+      return fileDbPromise;
+    }
+
+    function fileDbGet(id) {
+      return openFileDb().then(function (db) {
+        if (!db) return null;
+        return new Promise(function (resolve) {
+          try {
+            const req = db.transaction('files').objectStore('files').get(id);
+            req.onsuccess = function () { resolve(req.result || null); };
+            req.onerror = function () { resolve(null); };
+          } catch (err) { resolve(null); }
+        });
+      });
+    }
+
+    function fileDbPut(entry) {
+      return openFileDb().then(function (db) {
+        if (!db) return;
+        const store = db.transaction('files', 'readwrite').objectStore('files');
+        store.put(entry);
+        const countReq = store.count();
+        countReq.onsuccess = function () {
+          let extra = countReq.result - FILE_DB_MAX_ENTRIES;
+          if (extra <= 0) return;
+          store.index('savedAt').openKeyCursor().onsuccess = function (e) {
+            const cursor = e.target.result;
+            if (!cursor || extra-- <= 0) return;
+            store.delete(cursor.primaryKey);
+            cursor.continue();
+          };
+        };
+      }).catch(function () { });
+    }
+
+    // ไฟล์แนบหนึ่ง ID ไม่เปลี่ยนเนื้อหา (อัปโหลดใหม่ได้ ID ใหม่) จึงเก็บถาวรได้ ส่วนลายเซ็นใส่อายุเพราะเจ้าของอาจเปลี่ยนรูปใน ID เดิม
+    function fetchDriveFile(id, maxAgeMs) {
+      if (fileRequests.has(id)) return fileRequests.get(id);
+      const task = fileDbGet(id).then(function (hit) {
+        if (hit && (!maxAgeMs || Date.now() - hit.savedAt < maxAgeMs)) return hit;
+        return new Promise(function (resolve, reject) {
+          google.script.run.withSuccessHandler(resolve).withFailureHandler(reject).getDriveFileAsBase64(id);
+        }).then(function (data) {
+          const entry = { id: id, bytes: base64ToUint8(data.base64), mimeType: data.mimeType || '', name: data.name || '', size: Number(data.size || 0), savedAt: Date.now() };
+          fileDbPut(entry);
+          return entry;
+        });
+      });
+      fileRequests.set(id, task);
+      task.then(function () { fileRequests.delete(id); }, function () { fileRequests.delete(id); });
+      return task;
+    }
     let pendingFileName = '', pendingFileData = null, pendingFileType = '';
     let editingId = null;
     let pendingDeleteDocId = '';
@@ -3742,24 +3812,16 @@ function isReadyForDirectorWorkflow(doc) {
       if (!id || signatureCache.has(id) || signatureLoaded.has(id)) return Promise.resolve(signatureCache.get(id) || '');
       if (signatureLoading.has(id)) return signatureLoading.get(id);
 
-      const task = new Promise(function (resolve) {
-        google.script.run
-          .withSuccessHandler(function (data) {
-            const mime = data && (data.mimeType || data.type) ? (data.mimeType || data.type) : 'image/png';
-            const base64 = data && data.base64 ? data.base64 : '';
-            const src = base64 ? `data:${mime};base64,${base64}` : '';
-            if (src) signatureCache.set(id, src);
-            signatureLoaded.add(id);
-            signatureLoading.delete(id);
-            resolve(src);
-          })
-          .withFailureHandler(function () {
-            signatureLoaded.add(id);
-            signatureLoading.delete(id);
-            resolve('');
-          })
-          .getDriveFileAsBase64(id);
-      });
+      const task = fetchDriveFile(id, SIGNATURE_CACHE_TTL_MS)
+        .then(function (entry) {
+          return entry.bytes.length ? `data:${entry.mimeType || 'image/png'};base64,${uint8ToBase64(entry.bytes)}` : '';
+        }, function () { return ''; })
+        .then(function (src) {
+          if (src) signatureCache.set(id, src);
+          signatureLoaded.add(id);
+          signatureLoading.delete(id);
+          return src;
+        });
 
       signatureLoading.set(id, task);
       return task;
@@ -4054,7 +4116,7 @@ function isReadyForDirectorWorkflow(doc) {
       goView();
       autoRN();
       rStats();
-      if (role === 'admin') preloadFilesForDocs(D, 8);
+      preloadFilesForDocs(D, 6);
     }
 
     function loadDocsFromServer(options) {
@@ -5995,25 +6057,18 @@ function confirmDeleteDoc() {
         return;
       }
 
-      const data = await new Promise((resolve, reject) => {
-        google.script.run
-          .withSuccessHandler(resolve)
-          .withFailureHandler(reject)
-          .getDriveFileAsBase64(doc.driveFileId);
-      });
-
-      const fileData = base64ToUint8(data.base64);
+      const entry = await fetchDriveFile(cacheKey);
       fileCache.set(cacheKey, {
-        fileData: fileData,
-        mimeType: data.mimeType || doc.fileType || '',
-        name: data.name || doc.file || '',
-        size: Number(data.size || doc.fileSize || 0)
+        fileData: entry.bytes,
+        mimeType: entry.mimeType || doc.fileType || '',
+        name: entry.name || doc.file || '',
+        size: Number(entry.size || doc.fileSize || 0)
       });
 
-      doc.fileData = fileData;
-      doc.fileType = data.mimeType || doc.fileType;
-      doc.file = data.name || doc.file || (doc.hasFile ? 'ไฟล์แนบ' : '');
-      doc.fileSize = Number(data.size || doc.fileSize || 0);
+      doc.fileData = entry.bytes;
+      doc.fileType = entry.mimeType || doc.fileType;
+      doc.file = entry.name || doc.file || (doc.hasFile ? 'ไฟล์แนบ' : '');
+      doc.fileSize = Number(entry.size || doc.fileSize || 0);
       doc.hasFile = true;
     }
 
@@ -6062,22 +6117,8 @@ function confirmDeleteDoc() {
       try {
         const fileType = doc.fileType || '';
         if (fileType.includes('pdf')) {
-          const pdf = await pdfjsLib.getDocument({ data: doc.fileData.slice(0) }).promise;
-          pdfDoc = pdf;
-          for (let p = 1; p <= pdf.numPages; p++) {
-            const page = await pdf.getPage(p);
-            const vp = page.getViewport({ scale: 1.2 });
-            const wrap = document.createElement('div');
-            wrap.className = 'pdf-page-wrap';
-            wrap.dataset.page = p;
-            const canvas = document.createElement('canvas');
-            canvas.width = vp.width;
-            canvas.height = vp.height;
-            wrap.appendChild(canvas);
-            scroll.appendChild(wrap);
-            pdfPages.push({ wrap, canvas, vp });
-            await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
-          }
+          pdfDoc = await pdfjsLib.getDocument({ data: doc.fileData.slice(0) }).promise;
+          await renderPdfPage_(pdfDoc, 1, scroll);
         } else {
           const wrap = document.createElement('div');
           wrap.className = 'pdf-page-wrap';
@@ -6091,17 +6132,46 @@ function confirmDeleteDoc() {
         }
 
         if (renderToken !== pdfRenderToken || !isViewModalActiveForDoc(doc)) return;
-        await ensureSupervisorSignatureLoadedForDoc(doc);
-        if (renderToken !== pdfRenderToken || !isViewModalActiveForDoc(doc)) return;
         const layoutReady = await waitForPdfPreviewLayout_(renderToken, doc);
         if (!layoutReady || renderToken !== pdfRenderToken || !isViewModalActiveForDoc(doc)) return;
         loader.style.display = 'none';
         hint.style.display = 'block';
         placeStamps(doc);
+        ensureSupervisorSignatureLoadedForDoc(doc).then(function () {
+          if (renderToken === pdfRenderToken && isViewModalActiveForDoc(doc)) placeStamps(doc);
+        });
+        if (pdfDoc) renderRemainingPdfPages_(pdfDoc, renderToken, doc, scroll);
       } catch (e) {
         loader.style.display = 'none';
         empty.style.display = 'flex';
         document.getElementById('pdfEmptyTxt').textContent = 'ไม่สามารถแสดงไฟล์ได้: ' + getErrMsg(e);
+      }
+    }
+
+    async function renderPdfPage_(pdf, pageNumber, scroll) {
+      const page = await pdf.getPage(pageNumber);
+      const vp = page.getViewport({ scale: 1.2 });
+      const wrap = document.createElement('div');
+      wrap.className = 'pdf-page-wrap';
+      wrap.dataset.page = pageNumber;
+      const canvas = document.createElement('canvas');
+      canvas.width = vp.width;
+      canvas.height = vp.height;
+      wrap.appendChild(canvas);
+      scroll.appendChild(wrap);
+      pdfPages.push({ wrap, canvas, vp });
+      // intent print ไม่รอ requestAnimationFrame จึง render ต่อได้แม้ผู้ใช้สลับไปหน้าต่างอื่นระหว่างรอ
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp, intent: 'print' }).promise;
+    }
+
+    async function renderRemainingPdfPages_(pdf, renderToken, doc, scroll) {
+      try {
+        for (let p = 2; p <= pdf.numPages; p++) {
+          if (renderToken !== pdfRenderToken || !isViewModalActiveForDoc(doc)) return;
+          await renderPdfPage_(pdf, p, scroll);
+        }
+      } catch (e) {
+        console.warn('render remaining pages failed:', e);
       }
     }
 
@@ -8516,7 +8586,7 @@ function onDirectorSignerChange(selectEl) {
         const overlay = document.getElementById('loadingOverlay');
         loadingDepth = 0;
         if (overlay) overlay.classList.remove('on');
-        toast('ใช้เวลานานกว่าปกติ ระบบปิดหน้ารอให้อัตโนมัติแล้ว', 'w');
+        toast('ยังโหลดอยู่ เอกสารจะแสดงเองเมื่อโหลดเสร็จ', 'w');
       }, 20000);
     }
 

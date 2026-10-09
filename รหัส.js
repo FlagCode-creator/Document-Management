@@ -698,11 +698,13 @@ function getDriveFileAsBase64(fileId) {
 // ไม่เช็คโฟลเดอร์แม่ เพราะ getParents() ไม่คืนโฟลเดอร์ที่เข้าถึงได้ผ่านลิงก์แชร์อย่างเดียว
 function isFileReadableByApp_(file) {
   const id = file.getId();
-  if (HtmlService.createHtmlOutputFromFile(CFG.HTML_FILE).getContent().indexOf("'" + id + "'") >= 0) return true;
   const sh = getSheet_();
-  if (sh.getLastRow() < 2) return false;
-  const col = HEADERS.indexOf('drive_file_id') + 1;
-  return sh.getRange(2, col, sh.getLastRow() - 1, 1).getValues().some(row => clean_(row[0]) === id);
+  if (sh.getLastRow() >= 2) {
+    const col = HEADERS.indexOf('drive_file_id') + 1;
+    const hit = sh.getRange(2, col, sh.getLastRow() - 1, 1).createTextFinder(id).matchEntireCell(true).findNext();
+    if (hit) return true;
+  }
+  return HtmlService.createHtmlOutputFromFile(CFG.HTML_FILE).getContent().indexOf("'" + id + "'") >= 0;
 }
 
 function getDriveFileMeta(fileId) {
@@ -1187,10 +1189,7 @@ function ensureHeaders_(sh) {
 
   const lastRow = sh.getLastRow();
   const lastCol = Math.max(sh.getLastColumn(), HEADERS.length);
-  const range = sh.getRange(1, 1, lastRow, lastCol);
-  const values = range.getValues();
-  const richValues = range.getRichTextValues();
-  const currentHeaders = sanitizeHeaderRow_(values[0]);
+  const currentHeaders = sanitizeHeaderRow_(sh.getRange(1, 1, 1, lastCol).getValues()[0]);
   const isCanonical = HEADERS.every((h, i) => currentHeaders[i] === h);
 
   if (isCanonical) {
@@ -1198,9 +1197,13 @@ function ensureHeaders_(sh) {
       sh.insertColumnsAfter(sh.getLastColumn(), HEADERS.length - sh.getLastColumn());
       sh.getRange(1, 1, 1, HEADERS.length).setValues([HEADERS]);
     }
-    sh.setFrozenRows(1);
+    if (sh.getFrozenRows() !== 1) sh.setFrozenRows(1);
     return;
   }
+
+  const range = sh.getRange(1, 1, lastRow, lastCol);
+  const values = range.getValues();
+  const richValues = range.getRichTextValues();
 
   const dataRows = values.slice(1)
     .map((row, index) => ({ row: row, richRow: richValues[index + 1] || [], rowIndex: index + 2 }))
