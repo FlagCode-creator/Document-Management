@@ -694,14 +694,15 @@ function getDriveFileAsBase64(fileId) {
   };
 }
 
-// เปิดได้เฉพาะไฟล์แนบในโฟลเดอร์อัปโหลด และไฟล์ลายเซ็นที่ index.html อ้างถึง
+// เปิดได้เฉพาะไฟล์แนบของหนังสือที่ลงทะเบียนแล้ว และไฟล์ลายเซ็นที่ index.html อ้างถึง
+// ไม่เช็คโฟลเดอร์แม่ เพราะ getParents() ไม่คืนโฟลเดอร์ที่เข้าถึงได้ผ่านลิงก์แชร์อย่างเดียว
 function isFileReadableByApp_(file) {
-  const folderId = secret_('UPLOAD_FOLDER_ID');
-  const parents = file.getParents();
-  while (parents.hasNext()) {
-    if (parents.next().getId() === folderId) return true;
-  }
-  return HtmlService.createHtmlOutputFromFile(CFG.HTML_FILE).getContent().indexOf("'" + file.getId() + "'") >= 0;
+  const id = file.getId();
+  if (HtmlService.createHtmlOutputFromFile(CFG.HTML_FILE).getContent().indexOf("'" + id + "'") >= 0) return true;
+  const sh = getSheet_();
+  if (sh.getLastRow() < 2) return false;
+  const col = HEADERS.indexOf('drive_file_id') + 1;
+  return sh.getRange(2, col, sh.getLastRow() - 1, 1).getValues().some(row => clean_(row[0]) === id);
 }
 
 function getDriveFileMeta(fileId) {
