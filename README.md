@@ -25,7 +25,7 @@ Settings > Secrets and variables > Actions > New repository secret
 
 | ชื่อ | ค่า |
 | --- | --- |
-| `CLASPRC_JSON` | เนื้อหาไฟล์ `~/.clasprc.json` หลังรัน `npx @google/clasp login` |
+| `CLASPRC_JSON` | เนื้อหาไฟล์ `~/.clasprc.json` หลังรัน `npx @google/clasp login` ใน PowerShell คัดลอกด้วย `Get-Content $env:USERPROFILE\.clasprc.json -Raw | Set-Clipboard` |
 | `SPREADSHEET_ID` | ID ของ Google Sheet |
 | `UPLOAD_FOLDER_ID` | ID ของโฟลเดอร์ไฟล์แนบ บัญชีที่ deploy ต้องมีสิทธิ์แก้ไข |
 | `DEFAULT_PASSWORD` | รหัสผ่านเริ่มต้นตอนสร้างบัญชีครั้งแรก |
