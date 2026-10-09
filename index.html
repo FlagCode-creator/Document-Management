@@ -3183,14 +3183,27 @@
     // เปิดจาก GitHub Pages ไม่มี google.script.run จึงส่งคำขอไปที่ doPost ของ Apps Script แทน
     const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbwipjg2KaQsZucioXC45igIFYmsJIVL_MRymVYlIiNzp6Ko4ZTMQjlJ04Pho9919wmJ/exec';
     if (!(window.google && google.script && google.script.run)) {
+      // ขั้นรับผลของ Apps Script (script.googleusercontent.com) บางครั้งตอบหน้า 404 ของ Drive แทน JSON
+      // คำสั่งอ่านอย่างเดียวจึงลองใหม่ได้ ส่วนคำสั่งเขียนห้ามลองซ้ำ เพราะรอบแรกอาจบันทึกสำเร็จไปแล้ว
+      const READ_ONLY_FNS = ['verifyLogin', 'getIncomingDocs', 'getDriveFileAsBase64', 'getNextRunningNumber'];
+      const postApi = function (fn, args, attempt) {
+        return fetch(GAS_API_URL, { method: 'POST', body: JSON.stringify({ fn: fn, args: args }) })
+          .then(function (r) { return r.text(); })
+          .then(function (text) {
+            try { return JSON.parse(text); } catch (err) { throw new Error('เซิร์ฟเวอร์ Google ไม่ตอบกลับ กรุณาลองใหม่อีกครั้ง'); }
+          })
+          .catch(function (err) {
+            if (attempt >= 2 || READ_ONLY_FNS.indexOf(fn) < 0) throw err;
+            return new Promise(function (r) { setTimeout(r, 800 * (attempt + 1)); }).then(function () { return postApi(fn, args, attempt + 1); });
+          });
+      };
       const makeRunner = function (onSuccess, onFailure) {
         return new Proxy({}, {
           get: function (_, fn) {
             if (fn === 'withSuccessHandler') return function (cb) { return makeRunner(cb, onFailure); };
             if (fn === 'withFailureHandler') return function (cb) { return makeRunner(onSuccess, cb); };
             return function () {
-              fetch(GAS_API_URL, { method: 'POST', body: JSON.stringify({ fn: fn, args: Array.from(arguments) }) })
-                .then(function (r) { return r.json(); })
+              postApi(fn, Array.from(arguments), 0)
                 .then(function (res) {
                   if (res.ok) { if (onSuccess) onSuccess(res.result); }
                   else if (onFailure) onFailure(new Error(res.error));
