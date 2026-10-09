@@ -1,0 +1,37 @@
+name: Deploy to Apps Script
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: อัปเดตลิงก์ใช้งานจริง /exec ด้วย
+        type: boolean
+        default: false
+
+concurrency: gas-deploy
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Write clasp credentials and config.js
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          UPLOAD_FOLDER_ID: ${{ secrets.UPLOAD_FOLDER_ID }}
+          DEFAULT_PASSWORD: ${{ secrets.DEFAULT_PASSWORD }}
+        run: node scripts/write-config.mjs
+      - run: npx -y @google/clasp@3.4.1 push -f
+      - name: Update /exec deployment
+        if: github.event_name == 'workflow_dispatch' && inputs.deploy
+        env:
+          DEPLOYMENT_ID: ${{ secrets.DEPLOYMENT_ID }}
+        run: |
+          test -n "$DEPLOYMENT_ID" || { echo "::error::ยังไม่ได้ตั้ง secret DEPLOYMENT_ID"; exit 1; }
+          npx -y @google/clasp@3.4.1 deploy -i "$DEPLOYMENT_ID" -d "github ${GITHUB_SHA::7}"
