@@ -3180,6 +3180,29 @@
 
 
   <script>
+    // เปิดจาก GitHub Pages ไม่มี google.script.run จึงส่งคำขอไปที่ doPost ของ Apps Script แทน
+    const GAS_API_URL = 'https://script.google.com/macros/s/AKfycbwipjg2KaQsZucioXC45igIFYmsJIVL_MRymVYlIiNzp6Ko4ZTMQjlJ04Pho9919wmJ/exec';
+    if (!(window.google && google.script && google.script.run)) {
+      const makeRunner = function (onSuccess, onFailure) {
+        return new Proxy({}, {
+          get: function (_, fn) {
+            if (fn === 'withSuccessHandler') return function (cb) { return makeRunner(cb, onFailure); };
+            if (fn === 'withFailureHandler') return function (cb) { return makeRunner(onSuccess, cb); };
+            return function () {
+              fetch(GAS_API_URL, { method: 'POST', body: JSON.stringify({ fn: fn, args: Array.from(arguments) }) })
+                .then(function (r) { return r.json(); })
+                .then(function (res) {
+                  if (res.ok) { if (onSuccess) onSuccess(res.result); }
+                  else if (onFailure) onFailure(new Error(res.error));
+                }, function (err) { if (onFailure) onFailure(err); });
+            };
+          }
+        });
+      };
+      window.google = window.google || {};
+      google.script = { run: makeRunner(null, null) };
+    }
+
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
     let D = [];

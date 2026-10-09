@@ -148,6 +148,27 @@ function doGet() {
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
+function doPost(e) {
+  const api = {
+    verifyLogin,
+    getIncomingDocs,
+    getDriveFileAsBase64,
+    getNextRunningNumber,
+    saveIncomingDoc,
+    deleteIncomingDoc,
+    updateIncomingDocState
+  };
+  let out;
+  try {
+    const req = JSON.parse(e.postData.contents);
+    if (!Object.prototype.hasOwnProperty.call(api, req.fn)) throw new Error('ไม่รู้จักคำสั่ง ' + req.fn);
+    out = { ok: true, result: api[req.fn].apply(null, req.args || []) };
+  } catch (err) {
+    out = { ok: false, error: clean_(err && err.message ? err.message : err) };
+  }
+  return ContentService.createTextOutput(JSON.stringify(out)).setMimeType(ContentService.MimeType.JSON);
+}
+
 function include(filename) {
   return HtmlService.createHtmlOutputFromFile(filename).getContent();
 }
@@ -660,6 +681,7 @@ function getDriveFileAsBase64(fileId) {
   if (!id) throw new Error('ไม่พบ fileId');
 
   const file = DriveApp.getFileById(id);
+  if (!isFileReadableByApp_(file)) throw new Error('ไม่อนุญาตให้เปิดไฟล์นี้');
   const blob = file.getBlob();
   const bytes = blob.getBytes();
 
@@ -670,6 +692,16 @@ function getDriveFileAsBase64(fileId) {
     size: bytes.length,
     base64: Utilities.base64Encode(bytes)
   };
+}
+
+// เปิดได้เฉพาะไฟล์แนบในโฟลเดอร์อัปโหลด และไฟล์ลายเซ็นที่ index.html อ้างถึง
+function isFileReadableByApp_(file) {
+  const folderId = secret_('UPLOAD_FOLDER_ID');
+  const parents = file.getParents();
+  while (parents.hasNext()) {
+    if (parents.next().getId() === folderId) return true;
+  }
+  return HtmlService.createHtmlOutputFromFile(CFG.HTML_FILE).getContent().indexOf("'" + file.getId() + "'") >= 0;
 }
 
 function getDriveFileMeta(fileId) {
